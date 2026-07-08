@@ -21,6 +21,10 @@ claude-pack export
 # Bundle a specific directory, skipping heavy folders
 claude-pack export --dir ~/code/myproj --output myproj.claude.tgz --exclude node_modules --exclude .git
 
+# Bundle ONLY the Claude sessions/memories (no project files) —
+# handy when the code already travels via git
+claude-pack export --sessions-only --output myproj-sessions.tgz
+
 # See what's inside an archive without touching anything
 claude-pack inspect myproj.claude.tgz
 
@@ -58,7 +62,7 @@ On import, `claude-pack`:
 ### Options you might need
 
 - `--claude-dir PATH` — use a non-default Claude config dir (also respects `$CLAUDE_CONFIG_DIR`).
-- `--skip-project` — import only the sessions/memories, not the directory contents.
+- `--sessions-only` — on export, bundle only the Claude sessions/memories; on import, restore only those (alias: `--skip-project`). Sessions-only archives are detected automatically on import, and `--dest` names the project directory the sessions should attach to (it is left untouched).
 
 ## Development
 

@@ -42,6 +42,7 @@ type Manifest struct {
 	SessionFiles  []string  `json:"sessionFiles"`
 	MemoryFiles   int       `json:"memoryFiles"`
 	ProjectFiles  int       `json:"projectFiles"`
+	SessionsOnly  bool      `json:"sessionsOnly,omitempty"`
 }
 
 func main() {
@@ -107,7 +108,8 @@ Examples:
 // export
 
 func cmdExport(args []string) error {
-	fl := newFlagSet("export", `Bundle a directory and its Claude Code sessions/memories into a .tgz archive.
+	fl := newFlagSet("export", `Bundle a directory and its Claude Code sessions/memories into a .tgz archive
+(or, with --sessions-only, just the Claude data for that directory).
 
 Usage: claude-pack export [options]
 
@@ -116,17 +118,19 @@ Options:
   --output PATH      Archive to write (default: <dirname>-<date>.claude.tgz)
   --claude-dir PATH  Claude config dir (default: $CLAUDE_CONFIG_DIR or ~/.claude)
   --exclude PATTERN  Glob of path segments to skip, repeatable (e.g. node_modules)
+  --sessions-only    Bundle only the Claude sessions/memories, not the directory
   --force            Overwrite the output archive if it already exists
 `)
 	var opts struct {
 		dir, output, claudeDir string
 		excludes               multiFlag
-		force                  bool
+		sessionsOnly, force    bool
 	}
 	fl.StringVar(&opts.dir, "dir", ".", "")
 	fl.StringVar(&opts.output, "output", "", "")
 	fl.StringVar(&opts.claudeDir, "claude-dir", "", "")
 	fl.Var(&opts.excludes, "exclude", "")
+	fl.BoolVar(&opts.sessionsOnly, "sessions-only", false, "")
 	fl.BoolVar(&opts.force, "force", false, "")
 	if err := fl.Parse(args); err != nil {
 		return err
@@ -134,10 +138,10 @@ Options:
 	if fl.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q (did you mean --dir?)", fl.Arg(0))
 	}
-	return doExport(opts.dir, opts.output, opts.claudeDir, opts.excludes, opts.force, false)
+	return doExport(opts.dir, opts.output, opts.claudeDir, opts.excludes, opts.sessionsOnly, opts.force, false)
 }
 
-func doExport(dir, output, claudeDir string, excludes []string, force, interactive bool) error {
+func doExport(dir, output, claudeDir string, excludes []string, sessionsOnly, force, interactive bool) error {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return err
@@ -160,6 +164,9 @@ func doExport(dir, output, claudeDir string, excludes []string, force, interacti
 		return err
 	}
 	if len(sessions) == 0 && len(memFiles) == 0 {
+		if sessionsOnly {
+			return fmt.Errorf("nothing to export: no Claude sessions or memories found for %s (looked in %s)", absDir, claudeProjDir)
+		}
 		fmt.Fprintf(os.Stderr, "warning: no Claude sessions or memories found for %s (looked in %s)\n", absDir, claudeProjDir)
 		if interactive && !promptYesNo("Continue and bundle just the directory?", true) {
 			return errors.New("aborted")
@@ -192,7 +199,7 @@ func doExport(dir, output, claudeDir string, excludes []string, force, interacti
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // no-op after successful rename
 
-	projCount, err := writeArchive(tmp, absDir, absOutput, encoded, sessions, memFiles, claudeProjDir, excludes)
+	projCount, err := writeArchive(tmp, absDir, absOutput, encoded, sessions, memFiles, claudeProjDir, excludes, sessionsOnly)
 	closeErr := tmp.Close()
 	if err != nil {
 		return err
@@ -205,7 +212,11 @@ func doExport(dir, output, claudeDir string, excludes []string, force, interacti
 	}
 
 	fmt.Printf("Exported %s\n", absDir)
-	fmt.Printf("  project files : %d\n", projCount)
+	if sessionsOnly {
+		fmt.Printf("  project files : none (--sessions-only)\n")
+	} else {
+		fmt.Printf("  project files : %d\n", projCount)
+	}
 	fmt.Printf("  sessions      : %d\n", len(sessions))
 	fmt.Printf("  memory files  : %d\n", len(memFiles))
 	fmt.Printf("  archive       : %s\n", absOutput)
@@ -238,7 +249,7 @@ func collectClaudeData(claudeProjDir string) (sessions, memFiles []string, err e
 	return sessions, memFiles, nil
 }
 
-func writeArchive(w io.Writer, absDir, absOutput, encoded string, sessions, memFiles []string, claudeProjDir string, excludes []string) (projCount int, err error) {
+func writeArchive(w io.Writer, absDir, absOutput, encoded string, sessions, memFiles []string, claudeProjDir string, excludes []string, sessionsOnly bool) (projCount int, err error) {
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
 
@@ -256,38 +267,41 @@ func writeArchive(w io.Writer, absDir, absOutput, encoded string, sessions, memF
 		EncodedName:   encoded,
 		SessionFiles:  sessionNames,
 		MemoryFiles:   len(memFiles),
+		SessionsOnly:  sessionsOnly,
 	}
 
 	// Project files. Walk first so the manifest can carry the count; buffer
 	// entries would cost memory, so instead write manifest with count filled
 	// in after a pre-count pass (cheap: metadata only).
 	var projFiles []string
-	err = filepath.WalkDir(absDir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if p == absDir {
-			return nil
-		}
-		rel, _ := filepath.Rel(absDir, p)
-		if p == absOutput { // don't bundle the archive into itself
-			return nil
-		}
-		for _, pat := range excludes {
-			for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
-				if ok, _ := path.Match(pat, seg); ok {
-					if d.IsDir() {
-						return filepath.SkipDir
+	if !sessionsOnly {
+		err = filepath.WalkDir(absDir, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if p == absDir {
+				return nil
+			}
+			rel, _ := filepath.Rel(absDir, p)
+			if p == absOutput { // don't bundle the archive into itself
+				return nil
+			}
+			for _, pat := range excludes {
+				for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
+					if ok, _ := path.Match(pat, seg); ok {
+						if d.IsDir() {
+							return filepath.SkipDir
+						}
+						return nil
 					}
-					return nil
 				}
 			}
+			projFiles = append(projFiles, p)
+			return nil
+		})
+		if err != nil {
+			return 0, fmt.Errorf("scanning project directory: %w", err)
 		}
-		projFiles = append(projFiles, p)
-		return nil
-	})
-	if err != nil {
-		return 0, fmt.Errorf("scanning project directory: %w", err)
 	}
 
 	countFiles := 0
@@ -393,7 +407,9 @@ Options:
   --dest PATH        Where to place the project directory
                      (default: ./<original directory name>)
   --claude-dir PATH  Claude config dir (default: $CLAUDE_CONFIG_DIR or ~/.claude)
-  --skip-project     Only restore sessions/memories, not the directory itself
+  --sessions-only    Only restore sessions/memories, not the directory itself
+                     (--skip-project is an alias; --dest still names the
+                     project directory the sessions should attach to)
   --force            Overwrite existing project files, sessions, and memories
 `)
 	var opts struct {
@@ -404,12 +420,19 @@ Options:
 	fl.StringVar(&opts.dest, "dest", "", "")
 	fl.StringVar(&opts.claudeDir, "claude-dir", "", "")
 	fl.BoolVar(&opts.skipProject, "skip-project", false, "")
+	fl.BoolVar(&opts.skipProject, "sessions-only", false, "")
 	fl.BoolVar(&opts.force, "force", false, "")
+	// Allow: claude-pack import foo.tgz [--flags] (flag parsing stops at the
+	// first positional, so pull a leading archive path out before parsing).
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		opts.archive = args[0]
+		args = args[1:]
+	}
 	if err := fl.Parse(args); err != nil {
 		return err
 	}
 	if opts.archive == "" && fl.NArg() == 1 {
-		opts.archive = fl.Arg(0) // allow: claude-pack import foo.tgz
+		opts.archive = fl.Arg(0)
 	} else if fl.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fl.Arg(0))
 	}
@@ -426,6 +449,11 @@ func doImport(archive, dest, claudeDir string, skipProject, force, interactive b
 	}
 	if manifest.FormatVersion > formatVersion {
 		return fmt.Errorf("archive format v%d is newer than this tool understands (v%d); upgrade claude-pack", manifest.FormatVersion, formatVersion)
+	}
+	if manifest.SessionsOnly {
+		// The archive has no project files; behave as --sessions-only so a
+		// non-empty destination (the project usually already exists) is fine.
+		skipProject = true
 	}
 
 	if dest == "" {
@@ -706,6 +734,10 @@ Options:
 `)
 	var archive string
 	fl.StringVar(&archive, "archive", "", "")
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		archive = args[0]
+		args = args[1:]
+	}
 	if err := fl.Parse(args); err != nil {
 		return err
 	}
@@ -723,7 +755,11 @@ Options:
 	fmt.Printf("Created        : %s on %q\n", m.CreatedAt.Format(time.RFC1123), m.Hostname)
 	fmt.Printf("Tool / format  : claude-pack %s / v%d\n", m.ToolVersion, m.FormatVersion)
 	fmt.Printf("Original path  : %s\n", m.OriginalPath)
-	fmt.Printf("Project files  : %d\n", m.ProjectFiles)
+	if m.SessionsOnly {
+		fmt.Printf("Project files  : none (sessions-only archive)\n")
+	} else {
+		fmt.Printf("Project files  : %d\n", m.ProjectFiles)
+	}
 	fmt.Printf("Memory files   : %d\n", m.MemoryFiles)
 	fmt.Printf("Sessions       : %d\n", len(m.SessionFiles))
 	for _, s := range m.SessionFiles {
@@ -744,14 +780,17 @@ func runInteractive() error {
 		cwd, _ := os.Getwd()
 		dir := promptString("Directory to bundle", cwd)
 		output := promptString("Archive to write (blank = auto-named in current dir)", "")
-		excl := promptString("Exclude patterns, comma-separated (blank = none, e.g. node_modules,.git)", "")
+		sessionsOnly := !promptYesNo("Include the directory contents? (No = Claude sessions/memories only)", true)
 		var excludes []string
-		for _, e := range strings.Split(excl, ",") {
-			if e = strings.TrimSpace(e); e != "" {
-				excludes = append(excludes, e)
+		if !sessionsOnly {
+			excl := promptString("Exclude patterns, comma-separated (blank = none, e.g. node_modules,.git)", "")
+			for _, e := range strings.Split(excl, ",") {
+				if e = strings.TrimSpace(e); e != "" {
+					excludes = append(excludes, e)
+				}
 			}
 		}
-		return doExport(dir, output, "", excludes, false, true)
+		return doExport(dir, output, "", excludes, sessionsOnly, false, true)
 	case 1:
 		archive := promptString("Archive to import", "")
 		if archive == "" {

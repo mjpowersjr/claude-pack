@@ -98,7 +98,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 	projDir, claudeDir := setupFixture(t)
 	archive := filepath.Join(t.TempDir(), "out.tgz")
 
-	if err := doExport(projDir, archive, claudeDir, []string{"node_modules"}, false, false); err != nil {
+	if err := doExport(projDir, archive, claudeDir, []string{"node_modules"}, false, false, false); err != nil {
 		t.Fatalf("export: %v", err)
 	}
 
@@ -140,13 +140,13 @@ func TestExportRefusesToOverwriteArchive(t *testing.T) {
 	projDir, claudeDir := setupFixture(t)
 	archive := filepath.Join(t.TempDir(), "out.tgz")
 	mustWrite(t, archive, "existing")
-	if err := doExport(projDir, archive, claudeDir, nil, false, false); err == nil {
+	if err := doExport(projDir, archive, claudeDir, nil, false, false, false); err == nil {
 		t.Fatal("export overwrote an existing archive without --force")
 	}
 	if got := mustRead(t, archive); got != "existing" {
 		t.Error("existing archive was modified")
 	}
-	if err := doExport(projDir, archive, claudeDir, nil, true, false); err != nil {
+	if err := doExport(projDir, archive, claudeDir, nil, false, true, false); err != nil {
 		t.Fatalf("export --force: %v", err)
 	}
 }
@@ -154,7 +154,7 @@ func TestExportRefusesToOverwriteArchive(t *testing.T) {
 func TestExportSkipsOwnArchiveInsideDir(t *testing.T) {
 	projDir, claudeDir := setupFixture(t)
 	archive := filepath.Join(projDir, "self.tgz")
-	if err := doExport(projDir, archive, claudeDir, nil, false, false); err != nil {
+	if err := doExport(projDir, archive, claudeDir, nil, false, false, false); err != nil {
 		t.Fatalf("export: %v", err)
 	}
 	m, err := readManifest(archive)
@@ -171,7 +171,7 @@ func TestExportSkipsOwnArchiveInsideDir(t *testing.T) {
 func TestImportRefusesNonEmptyDest(t *testing.T) {
 	projDir, claudeDir := setupFixture(t)
 	archive := filepath.Join(t.TempDir(), "out.tgz")
-	if err := doExport(projDir, archive, claudeDir, nil, false, false); err != nil {
+	if err := doExport(projDir, archive, claudeDir, nil, false, false, false); err != nil {
 		t.Fatalf("export: %v", err)
 	}
 	dest := t.TempDir()
@@ -187,7 +187,7 @@ func TestImportRefusesNonEmptyDest(t *testing.T) {
 func TestImportSkipsExistingSessionsWithoutForce(t *testing.T) {
 	projDir, claudeDir := setupFixture(t)
 	archive := filepath.Join(t.TempDir(), "out.tgz")
-	if err := doExport(projDir, archive, claudeDir, nil, false, false); err != nil {
+	if err := doExport(projDir, archive, claudeDir, nil, false, false, false); err != nil {
 		t.Fatalf("export: %v", err)
 	}
 	destRoot := t.TempDir()
@@ -259,7 +259,7 @@ func TestExportWithNoClaudeData(t *testing.T) {
 	mustMkdir(t, projDir)
 	mustWrite(t, filepath.Join(projDir, "f.txt"), "x")
 	archive := filepath.Join(root, "out.tgz")
-	if err := doExport(projDir, archive, filepath.Join(root, "no-claude"), nil, false, false); err != nil {
+	if err := doExport(projDir, archive, filepath.Join(root, "no-claude"), nil, false, false, false); err != nil {
 		t.Fatalf("export: %v", err)
 	}
 	m, err := readManifest(archive)
@@ -280,7 +280,7 @@ func TestSymlinkRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(t.TempDir(), "out.tgz")
-	if err := doExport(projDir, archive, claudeDir, nil, false, false); err != nil {
+	if err := doExport(projDir, archive, claudeDir, nil, false, false, false); err != nil {
 		t.Fatalf("export: %v", err)
 	}
 	dest := filepath.Join(t.TempDir(), "proj")
@@ -290,6 +290,64 @@ func TestSymlinkRoundTrip(t *testing.T) {
 	target, err := os.Readlink(filepath.Join(dest, "link.md"))
 	if err != nil || target != "README.md" {
 		t.Errorf("symlink not preserved: target=%q err=%v", target, err)
+	}
+}
+
+func TestSessionsOnlyRoundTrip(t *testing.T) {
+	projDir, claudeDir := setupFixture(t)
+	archive := filepath.Join(t.TempDir(), "out.tgz")
+
+	if err := doExport(projDir, archive, claudeDir, nil, true /*sessionsOnly*/, false, false); err != nil {
+		t.Fatalf("export --sessions-only: %v", err)
+	}
+	m, err := readManifest(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.SessionsOnly || m.ProjectFiles != 0 || len(m.SessionFiles) != 1 || m.MemoryFiles != 1 {
+		t.Fatalf("unexpected manifest: %+v", m)
+	}
+
+	// Import must succeed into an existing, NON-empty destination (the
+	// project already lives there) without --force, and must not touch it.
+	destRoot := t.TempDir()
+	dest := filepath.Join(destRoot, "proj")
+	mustMkdir(t, dest)
+	mustWrite(t, filepath.Join(dest, "existing.txt"), "untouched")
+	newClaude := filepath.Join(destRoot, "claude2")
+	if err := doImport(archive, dest, newClaude, false, false, false); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if got := mustRead(t, filepath.Join(dest, "existing.txt")); got != "untouched" {
+		t.Error("sessions-only import modified the project directory")
+	}
+	entries, _ := os.ReadDir(dest)
+	if len(entries) != 1 {
+		t.Errorf("sessions-only import wrote files into the project directory: %v", entries)
+	}
+
+	newEnc := encodeProjectPath(dest)
+	sess := mustRead(t, filepath.Join(newClaude, "projects", newEnc, "session-abc.jsonl"))
+	if !strings.Contains(sess, `"cwd":"`+dest+`"`) {
+		t.Errorf("session cwd not rewritten: %s", sess)
+	}
+	mem := mustRead(t, filepath.Join(newClaude, "projects", newEnc, "memory", "fact.md"))
+	if !strings.Contains(mem, dest) {
+		t.Errorf("memory not rewritten: %s", mem)
+	}
+}
+
+func TestSessionsOnlyExportWithNoClaudeDataErrors(t *testing.T) {
+	root := t.TempDir()
+	projDir := filepath.Join(root, "plain")
+	mustMkdir(t, projDir)
+	archive := filepath.Join(root, "out.tgz")
+	err := doExport(projDir, archive, filepath.Join(root, "no-claude"), nil, true, false, false)
+	if err == nil {
+		t.Fatal("sessions-only export with no Claude data should error")
+	}
+	if _, statErr := os.Stat(archive); !os.IsNotExist(statErr) {
+		t.Error("archive was created despite error")
 	}
 }
 
