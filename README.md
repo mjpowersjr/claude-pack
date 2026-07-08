@@ -9,10 +9,8 @@ Claude Code keys its sessions and memories to the *absolute path* of your projec
 Download a single static binary for your platform from the [releases page](../../releases), or build from source:
 
 ```sh
-go install github.com/mjpowersjr/claude-import-export@latest
+go install github.com/mjpowersjr/claude-pack@latest
 ```
-
-(The binary installs as `claude-import-export` via `go install`; release binaries are named `claude-pack`.)
 
 ## Usage
 

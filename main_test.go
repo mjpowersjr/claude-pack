@@ -12,7 +12,7 @@ import (
 
 func TestEncodeProjectPath(t *testing.T) {
 	cases := map[string]string{
-		"/home/mike/github/personal/claude-import-export": "-home-mike-github-personal-claude-import-export",
+		"/home/mike/github/personal/claude-pack": "-home-mike-github-personal-claude-pack",
 		"/home/mike/my.project_v2":                        "-home-mike-my-project-v2",
 		`C:\Users\mike\proj`:                              "C--Users-mike-proj",
 		"":                                                "",
