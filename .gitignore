@@ -1,0 +1,17 @@
+# Build output
+/claude-pack
+/claude-pack.exe
+/dist/
+
+# Archives produced while testing
+*.tgz
+*.claude.tgz
+
+# Go
+*.test
+coverage.out
+
+# Editor/OS noise
+.idea/
+.vscode/
+.DS_Store
