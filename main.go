@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	toolVersion   = "1.0.0"
+	toolVersion   = "1.2.0"
 	formatVersion = 1
 	manifestName  = "manifest.json"
 	projectPrefix = "project/"
@@ -801,7 +801,13 @@ func runInteractive() error {
 			return err
 		}
 		fmt.Printf("  (original location: %s, %d sessions, %d memory files)\n", m.OriginalPath, len(m.SessionFiles), m.MemoryFiles)
-		return doImport(archive, "", "", false, false, true)
+		sessionsOnly := false
+		if m.SessionsOnly {
+			fmt.Println("  (sessions-only archive: it contains no project files)")
+		} else {
+			sessionsOnly = !promptYesNo("Restore the project directory contents too? (No = Claude sessions/memories only)", true)
+		}
+		return doImport(archive, "", "", sessionsOnly, false, true)
 	default:
 		archive := promptString("Archive to inspect", "")
 		return cmdInspect([]string{"--archive", archive})
